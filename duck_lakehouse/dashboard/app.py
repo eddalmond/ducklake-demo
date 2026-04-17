@@ -5,7 +5,6 @@ DuckLake Dashboard - Flask backend for pipeline visualization and control
 
 import json
 import os
-import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -516,88 +515,122 @@ def clean_all():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-_duckdb_ui_process = None
 
-
-def _start_duckdb_ui():
-    """Start DuckDB local UI server with DuckLake pre-attached."""
-    global _duckdb_ui_process
-    if _duckdb_ui_process is not None and _duckdb_ui_process.poll() is None:
-        return True
-    try:
-        init_sql = (
-            f"INSTALL ducklake; LOAD ducklake; "
-            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
-            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true); "
-            f"USE vaccination_lake;"
-        )
-        _duckdb_ui_process = subprocess.Popen(
-            ["script", "-qc", f"duckdb -c \"{init_sql}\" -ui", "/dev/null"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception:
-        return False
-
+# DuckDB UI is now managed by the aiohttp server layer (server.py)
+# via duckdb_ui.py's Python API approach, not the CLI subprocess.
+# The Flask routes below are fallbacks for standalone Flask mode.
 
 @app.route("/api/duckdb-ui/status")
 def duckdb_ui_status():
     """Check if DuckDB UI is running."""
-    running = _duckdb_ui_process is not None and _duckdb_ui_process.poll() is None
-    return jsonify({"running": running})
+    return jsonify({"running": False, "message": "Run with server.py for DuckDB UI support"})
 
 
 @app.route("/api/duckdb-ui/start")
 def duckdb_ui_start():
     """Start the DuckDB UI."""
-    if _start_duckdb_ui():
-        return jsonify({"status": "started"})
-    return jsonify({"status": "error", "message": "Failed to start DuckDB UI"}), 500
+    return jsonify({"status": "error", "message": "Run with server.py for DuckDB UI support"}), 501
 
 
 @app.route("/duckdb-ui")
 @app.route("/duckdb-ui/")
 @app.route("/duckdb-ui/<path:subpath>")
 def duckdb_ui_proxy(subpath=""):
-    """Reverse proxy DuckDB UI through the dashboard so remote clients can access it."""
-    if _duckdb_ui_process is None or _duckdb_ui_process.poll() is not None:
-        return jsonify({"error": "DuckDB UI not running"}), 503
+    """DuckDB UI proxy - requires aiohttp server."""
+    return jsonify({"error": "DuckDB UI requires running under server.py"}), 503
+
+
+# --- SQL Query API ---
+# Direct SQL execution endpoint for the DuckLake demo.
+# This lets users run SQL queries against DuckLake from the dashboard
+# without needing MotherDuck authentication.
+
+@app.route("/api/sql", methods=["POST"])
+def execute_sql():
+    """Execute a SQL query against DuckLake and return results."""
+    data = request.get_json(silent=True) or {}
+    sql = data.get("query", "").strip()
+    if not sql:
+        return jsonify({"error": "No query provided"}), 400
     try:
-        import requests as req
-        target = f"http://127.0.0.1:4213/{subpath}"
-        fwd_headers = {k: v for k, v in request.headers if k.lower() not in ("host", "origin", "referer")}
-        resp = req.request(
-            method=request.method,
-            url=target,
-            headers=fwd_headers,
-            data=request.get_data(),
-            params=request.args,
-            allow_redirects=False,
+        conn = duckdb.connect()
+        conn.execute("INSTALL ducklake")
+        conn.execute("LOAD ducklake")
+        conn.execute(
+            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
+            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
         )
-        excluded = {"transfer-encoding", "content-encoding", "connection"}
-        out_headers = [(k, v) for k, v in resp.headers.items() if k.lower() not in excluded]
-        content = resp.content
-        ct = resp.headers.get("content-type", "")
-        if "text/html" in ct:
-            text = content.decode("utf-8", errors="replace")
-            text = text.replace('<base href="/"/>', '<base href="/duckdb-ui/">')
-            content = text.encode("utf-8")
-        elif "javascript" in ct or "text/javascript" in ct:
-            text = content.decode("utf-8", errors="replace")
-            text = text.replace('localhost:4213', f'{request.host}/duckdb-ui')
-            text = text.replace('"ws://', f'"wss://{request.host}/duckdb-ui/ws/')
-            content = text.encode("utf-8")
-        return Response(content, status=resp.status_code, headers=out_headers)
+        conn.execute("USE vaccination_lake")
+        result = conn.execute(sql)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        conn.close()
+        return jsonify({
+            "columns": columns,
+            "rows": [list(r) for r in rows],
+            "rowCount": len(rows),
+        })
     except Exception as e:
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/sql/tables")
+def list_sql_tables():
+    """List all DuckLake tables."""
+    try:
+        conn = duckdb.connect()
+        conn.execute("INSTALL ducklake")
+        conn.execute("LOAD ducklake")
+        conn.execute(
+            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
+            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
+        )
+        conn.execute("USE vaccination_lake")
+        result = conn.execute(
+            "SELECT table_schema, table_name, table_type "
+            "FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('information_schema', '__ducklake_metadata') "
+            "ORDER BY table_schema, table_name"
+        )
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
+        conn.close()
+        return jsonify({
+            "columns": columns,
+            "rows": [list(r) for r in rows],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sql/schemas")
+def list_sql_schemas():
+    """List DuckLake schemas."""
+    try:
+        conn = duckdb.connect()
+        conn.execute("INSTALL ducklake")
+        conn.execute("LOAD ducklake")
+        conn.execute(
+            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
+            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
+        )
+        conn.execute("USE vaccination_lake")
+        result = conn.execute(
+            "SELECT schema_name FROM information_schema.schemata "
+            "WHERE schema_name NOT IN ('information_schema', '__ducklake_metadata') "
+            "ORDER BY schema_name"
+        )
+        schemas = [r[0] for r in result.fetchall()]
+        conn.close()
+        return jsonify({"schemas": schemas})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
-    import socket
     port = int(os.environ.get("DUCKLAKE_PORT", "8765"))
     host = os.environ.get("DUCKLAKE_HOST", "0.0.0.0")
-    print("Starting DuckLake Dashboard...")
-    print(f"Base directory: {BASE_DIR}")
+    print("Starting DuckLake Dashboard (standalone - no DuckDB UI)")
+    print("For DuckDB UI support, run: python server.py")
     print(f"Listening on http://{host}:{port}")
     app.run(debug=True, host=host, port=port, threaded=True)

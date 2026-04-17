@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-DuckLake Demo - Startup script for Railway deployment
+DuckLake Demo - Entry point for Railway deployment
 
-Initialises the DuckLake warehouse and starts the Flask dashboard.
+Initialises DuckLake, then runs the Flask dashboard under gunicorn
+(single worker for DuckDB consistency).
 """
 
+import logging
 import os
 import sys
-import subprocess
 from pathlib import Path
 
-# Base directory is wherever this script lives
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).parent
 
 # Environment variable defaults
@@ -31,17 +37,17 @@ def ensure_dirs():
 
 def init_ducklake():
     """Initialise the DuckLake warehouse."""
-    print("Initialising DuckLake...")
+    logger.info("Initialising DuckLake...")
     from duck_lakehouse.ducklake.init_ducklake import main as init_main
     init_main(catalog_path=CATALOG_PATH, data_path=DUCKLAKE_DATA_PATH)
-    print("DuckLake initialised.")
+    logger.info("DuckLake initialised.")
 
 
 def main():
     ensure_dirs()
     init_ducklake()
 
-    # Set env vars for the Flask app to pick up
+    # Set env vars for the Flask app
     os.environ.setdefault("DUCKLAKE_PORT", str(PORT))
     os.environ.setdefault("DUCKLAKE_HOST", "0.0.0.0")
     os.environ.setdefault("CATALOG_PATH", CATALOG_PATH)
@@ -49,15 +55,11 @@ def main():
     os.environ.setdefault("MESH_DIR", MESH_DIR)
     os.environ.setdefault("DATA_DIR", DATA_DIR)
 
-    # Start the dashboard
-    print(f"Starting DuckLake Dashboard on 0.0.0.0:{PORT}")
-    from duck_lakehouse.dashboard.app import app
-
-    # Use gunicorn in production, flask dev server as fallback
+    # Try gunicorn (production), fall back to Flask dev server
     try:
-        import gunicorn.app.base
+        from gunicorn.app.base import BaseApplication
 
-        class StandaloneApplication(gunicorn.app.base.BaseApplication):
+        class StandaloneApplication(BaseApplication):
             def __init__(self, app, options=None):
                 self.options = options or {}
                 self.application = app
@@ -71,15 +73,25 @@ def main():
             def load(self):
                 return self.application
 
+        from duck_lakehouse.dashboard.app import app
+
         options = {
             "bind": f"0.0.0.0:{PORT}",
-            "workers": 1,  # single worker for DuckDB state
-            "timeout": 120,
+            "workers": 1,           # Single worker for DuckDB consistency
             "threads": 4,
+            "timeout": 120,
+            "accesslog": "-",
+            "errorlog": "-",
+            "loglevel": "info",
         }
+
+        logger.info(f"Starting gunicorn on 0.0.0.0:{PORT}")
         StandaloneApplication(app, options).run()
+
     except ImportError:
-        app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+        logger.info("gunicorn not available, using Flask dev server")
+        from duck_lakehouse.dashboard.app import app
+        app.run(host="0.0.0.0", port=PORT, threaded=True)
 
 
 if __name__ == "__main__":

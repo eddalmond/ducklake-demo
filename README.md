@@ -1,93 +1,95 @@
-# DuckLake Demo
+# DuckLake Demo 🦆
 
-A self-contained NHS vaccination data lakehouse demo featuring DuckLake (DuckDB's lakehouse format), dbt transformations, a MESH simulator, and an interactive web dashboard.
+A complete NHS vaccination data pipeline demo using **DuckLake** — DuckDB's native lakehouse format.
+
+## What's Inside
+
+- **DuckLake** catalog with staging → intermediate → marts layers
+- **dbt** transformation models (deduplication, validation, dimensional modeling)
+- **MESH simulator** — mimics the NHS Message Exchange for Substances and Health
+- **Flask dashboard** — pipeline orchestration + built-in SQL query interface
+- **Docker-ready** with Railway deployment support
+
+## Quick Start
+
+### Local (Python)
+
+```bash
+pip install -r requirements.txt
+python start.py
+```
+
+Open http://localhost:8765
+
+### Docker
+
+```bash
+docker build -t ducklake-demo .
+docker run -p 8765:8765 -v ducklake-data:/app/data ducklake-demo
+```
+
+### Railway
+
+Push to GitHub and connect the repo to Railway. The `Dockerfile` and `railway.toml` handle the rest.
+
+## Pipeline Stages
+
+| Stage | Description |
+|-------|-------------|
+| **Generate Data** | Creates synthetic v5 CSV vaccination records |
+| **MESH Simulator** | Moves files through inbox → processing → archive |
+| **Init DuckLake** | Creates catalog, schemas, and table definitions |
+| **Ingest Data** | Loads CSVs from MESH archive into staging |
+| **dbt Transform** | Runs dbt models: staging → intermediate → marts |
+
+## SQL Query Interface
+
+The dashboard includes a built-in SQL query interface under the **SQL Query** tab in the Data Explorer. Run any SQL against your DuckLake:
+
+```sql
+SELECT * FROM staging.stg_vaccinations LIMIT 50;
+SELECT * FROM marts.fct_vaccination_events LIMIT 50;
+SELECT vaccine_name, COUNT(*) FROM marts.fct_vaccination_events GROUP BY vaccine_name;
+```
 
 ## Architecture
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌──────────────┐    ┌─────────────┐
-│  Data        │───▶│  MESH        │───▶│  DuckLake    │───▶│  dbt        │
-│  Generator   │    │  Simulator   │    │  (Staging)  │    │  (Marts)    │
-└─────────────┘    └──────────────┘    └──────────────┘    └─────────────┘
-                                                │
-                                        ┌───────▼───────┐
-                                        │  Dashboard    │
-                                        │  (Flask + SSE)│
-                                        └───────────────┘
+CSV Files → MESH Simulator → DuckLake Staging → dbt → DuckLake Marts
+                                                    ↳ dim_patient
+                                                    ↳ dim_site
+                                                    ↳ dim_vaccine
+                                                    ↳ fct_vaccination_events
 ```
-
-**Pipeline stages:**
-1. **Generate** – Creates synthetic NHS vaccination v5 CSV data
-2. **MESH** – Simulates NHS MESH file transfer (inbox → processing → archive)
-3. **Init** – Initialises the DuckLake warehouse with schemas and tables
-4. **Ingest** – Loads archived CSVs into the staging layer
-5. **dbt** – Runs transformation models (staging → intermediate → marts)
-
-## Quick Start (Local)
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Initialise the lakehouse and start the dashboard
-python start.py
-```
-
-Open [http://localhost:8765](http://localhost:8765) and click **Run Full Pipeline**.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `8765` | HTTP port (Railway sets this automatically) |
-| `DATA_DIR` | `./data` | Root data directory for catalog and parquet files |
-| `CATALOG_PATH` | `{DATA_DIR}/catalog/vaccination_lake.ducklake` | DuckLake catalog file |
-| `DUCKLAKE_DATA_PATH` | `{DATA_DIR}/parquet` | DuckLake data storage |
-| `MESH_DIR` | `./mesh_simulator` | MESH simulator directory |
+| `DATA_DIR` | `/app/data` | Base data directory |
+| `CATALOG_PATH` | `{DATA_DIR}/catalog/vaccination_lake.ducklake` | DuckLake catalog path |
+| `DUCKLAKE_DATA_PATH` | `{DATA_DIR}/parquet` | DuckLake data (parquet) path |
+| `MESH_DIR` | `/app/mesh_simulator` | MESH simulator directory |
+| `PORT` | `8765` | Dashboard port |
 
-## Deploy to Railway
+## API Endpoints
 
-1. Create a new repo from this template
-2. Connect it to Railway
-3. Railway auto-detects the Dockerfile and deploys
-
-The app runs on the port specified by Railway's `PORT` env var (injected automatically).
-
-### Railway CLI
-
-```bash
-railway init
-railway up
-```
+- `GET /api/status` — Pipeline stage status
+- `GET /api/run/{stage}` — Run a pipeline stage (SSE stream)
+- `POST /api/clean` — Clean all data
+- `GET /api/tables` — List DuckLake tables
+- `GET /api/query/{table}` — Preview table data
+- `POST /api/sql` — Execute arbitrary SQL
+- `GET /api/sql/schemas` — List schemas
+- `GET /api/sql/tables` — List tables with schema info
+- `GET /api/preview/row_counts` — Row counts for staging/marts
 
 ## Tech Stack
 
-- **DuckDB** + **DuckLake** – Embedded analytical lakehouse
-- **dbt-duckdb** – Transformation layer
-- **Flask** – Dashboard backend with SSE streaming
-- **Vanilla JS** – Dashboard frontend (no build step needed)
-
-## Project Structure
-
-```
-├── Dockerfile
-├── railway.toml
-├── requirements.txt
-├── start.py              # Entry point: init + gunicorn
-└── duck_lakehouse/
-    ├── dashboard/
-    │   ├── app.py         # Flask backend
-    │   ├── requirements.txt
-    │   └── static/
-    │       ├── index.html
-    │       ├── app.js
-    │       └── styles.css
-    ├── data_generator/    # Synthetic v5 vaccination data
-    ├── ducklake/          # DuckLake init + ingest
-    ├── mesh_simulator/    # NHS MESH simulation
-    └── dbt/
-        └── dbt_ducklake/ # dbt project
-```
+- **DuckDB** + **DuckLake** — OLAP database with native lakehouse format
+- **dbt-duckdb** — Transformation framework
+- **Flask** — Dashboard and API server
+- **gunicorn** — Production WSGI server (single worker for DuckDB consistency)
 
 ## License
 

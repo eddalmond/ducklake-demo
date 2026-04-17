@@ -328,50 +328,78 @@ function switchExplorerTab(tab) {
     document.getElementById(`explorer-tab-${tab}`).style.display = '';
 }
 
-// DuckDB UI
-async function startDuckDBUI() {
-    const btn = document.getElementById('duckui-start-btn');
-    const statusText = document.getElementById('duckui-status-text');
+// DuckDB UI - replaced with SQL Query interface
+// The DuckDB UI requires MotherDuck auth which isn't available in demo mode.
+// Instead, we provide a direct SQL query interface against DuckLake.
+
+function setSQL(query) {
+    document.getElementById('sql-input').value = query;
+}
+
+async function executeSQL() {
+    const btn = document.getElementById('sql-run-btn');
+    const status = document.getElementById('sql-status');
+    const sql = document.getElementById('sql-input').value.trim();
+
+    if (!sql) {
+        status.textContent = 'Please enter a SQL query';
+        status.className = 'text-xs text-red-400 mt-1';
+        return;
+    }
+
     btn.disabled = true;
-    btn.textContent = 'Starting...';
-    statusText.textContent = 'Starting DuckDB UI server...';
+    btn.textContent = 'Running...';
+    status.textContent = 'Executing query...';
+    status.className = 'text-xs text-slate-400 mt-1';
 
     try {
-        const resp = await fetch(`${API_BASE}/api/duckdb-ui/start`);
+        const startTime = performance.now();
+        const resp = await fetch(`${API_BASE}/api/sql`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: sql }),
+        });
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
         const data = await resp.json();
 
-        if (data.status === 'started') {
-            statusText.textContent = 'Waiting for UI to be ready...';
-            let ready = false;
-            for (let i = 0; i < 20; i++) {
-                await new Promise(r => setTimeout(r, 1000));
-                try {
-                    const check = await fetch(`${API_BASE}/duckdb-ui/`, { method: 'HEAD' });
-                    if (check.ok || check.status === 200) {
-                        ready = true;
-                        break;
-                    }
-                } catch {}
-            }
-            if (ready) {
-                document.getElementById('duckui-launch').style.display = 'none';
-                const frame = document.getElementById('duckui-frame-wrap');
-                frame.style.display = '';
-                document.getElementById('duckui-iframe').src = `${API_BASE}/duckdb-ui/`;
-                statusText.textContent = 'Running';
-            } else {
-                statusText.textContent = 'UI started but not reachable yet. Try again in a moment.';
-            }
+        if (data.error) {
+            status.textContent = `Error: ${data.error}`;
+            status.className = 'text-xs text-red-400 mt-1';
+            document.getElementById('sql-results-table').innerHTML =
+                `<thead><tr><td class="empty-state">${data.error}</td></tr></thead>`;
         } else {
-            statusText.textContent = `Error: ${data.message || 'unknown'}`;
+            const columns = data.columns || [];
+            const rows = data.rows || [];
+            status.textContent = `${rows.length} rows · ${columns.length} columns · ${elapsed}s`;
+            status.className = 'text-xs text-green-600 mt-1';
+
+            if (rows.length === 0) {
+                document.getElementById('sql-results-table').innerHTML =
+                    '<thead><tr><td class="empty-state">Query returned no results</td></tr></thead>';
+            } else {
+                let html = `<thead><tr>${columns.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>`;
+                for (const row of rows) {
+                    html += '<tr>';
+                    for (const val of row) {
+                        html += `<td title="${val !== null && val !== undefined ? String(val) : ''}">${val !== null && val !== undefined ? val : ''}</td>`;
+                    }
+                    html += '</tr>';
+                }
+                html += '</tbody>';
+                document.getElementById('sql-results-table').innerHTML = html;
+            }
         }
     } catch (e) {
-        statusText.textContent = `Error: ${e.message}`;
+        status.textContent = `Error: ${e.message}`;
+        status.className = 'text-xs text-red-400 mt-1';
     }
+
     btn.disabled = false;
-    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> Launch DuckDB UI`;
+    btn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+    </svg> Run`;
 }
 
 function openDuckDBUI() {
-    window.open(`${API_BASE}/duckdb-ui/`, '_blank');
+    window.open(`http://localhost:${window.DUCKDB_UI_PORT || 4213}/`, '_blank');
 }
