@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.git/
+.env
+.venv/
+venv/
+node_modules/
+
+# DuckLake data (generated at runtime)
+data/catalog/
+data/parquet/
+
+# MESH data (generated at runtime)
+mesh_simulator/inbox/*.csv
+mesh_simulator/processing/*.csv
+mesh_simulator/archive/*.csv
+mesh_simulator/logs/*.jsonl
+
+# dbt artifacts
+dbt/dbt_ducklake/logs/
+dbt/dbt_ducklake/target/
+dbt/dbt_ducklake/dbt_packages/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
