@@ -59,6 +59,7 @@ def ingest_files(
     catalog_path: str = None,
     data_path: str = None,
     base_dir: str = None,
+    conn: duckdb.DuckDBPyConnection = None,
 ):
     if archive_dir is None:
         archive_dir = os.environ.get("ARCHIVE_DIR", os.path.join(os.environ.get("MESH_DIR", "duck_lakehouse/mesh_simulator"), "archive"))
@@ -72,14 +73,17 @@ def ingest_files(
         print("No CSV files in archive")
         return 0
 
-    from duck_lakehouse.ducklake.init_ducklake import init_ducklake
-
-    conn = init_ducklake(
-        lake_name=lake_name,
-        catalog_path=catalog_path,
-        data_path=data_path,
-        base_dir=base_dir,
-    )
+    if conn is None:
+        from duck_lakehouse.ducklake.init_ducklake import init_ducklake
+        conn = init_ducklake(
+            lake_name=lake_name,
+            catalog_path=catalog_path,
+            data_path=data_path,
+            base_dir=base_dir,
+        )
+        close_conn = True
+    else:
+        close_conn = False
 
     conn.execute(f"USE {lake_name}.staging")
 
@@ -104,7 +108,8 @@ def ingest_files(
         total += len(records)
         print(f"  Loaded {len(records)} records from {csv_file.name}")
 
-    conn.close()
+    if close_conn:
+        conn.close()
     print(f"\nIngested {total} total records from {len(csv_files)} files")
     return total
 

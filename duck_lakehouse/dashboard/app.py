@@ -452,26 +452,80 @@ def run_stage(stage):
             cmd = [sys.executable, "-m", "duck_lakehouse.data_generator", 
                    "--output", str(INBOX_DIR), 
                    "--records", "100", "--type", "all"]
+            yield from run_command(cmd, cwd=str(BASE_DIR), stage=stage)()
         elif stage == "mesh":
             cmd = [sys.executable, "-m", "duck_lakehouse.mesh_simulator",
                    "--base-dir", str(MESH_DIR), "--once"]
+            yield from run_command(cmd, cwd=str(BASE_DIR), stage=stage)()
         elif stage == "init":
-            cmd = [sys.executable, "-c",
-                   f"from duck_lakehouse.ducklake.init_ducklake import main; main("
-                   f"catalog_path='{CATALOG_PATH}', data_path='{DATA_PATH}')"]
+            # Use shared connection instead of subprocess to avoid lock conflict
+            status[stage]["state"] = "running"
+            status[stage]["output"] = []
+            try:
+                yield f"data: {json.dumps({'line': 'Using shared DuckLake connection...'})}\n\n"
+                conn = get_ducklake_conn()
+                
+                # Re-run table creation using shared connection
+                from duck_lakehouse.ducklake.init_ducklake import (
+                    create_schemas, create_staging_tables, 
+                    create_intermediate_tables, create_mart_tables, create_reference_tables
+                )
+                
+                lake_name = "vaccination_lake"
+                create_schemas(conn, lake_name)
+                yield f"data: {json.dumps({'line': 'Schemas created'})}\n\n"
+                
+                create_staging_tables(conn, lake_name)
+                yield f"data: {json.dumps({'line': 'Staging tables created'})}\n\n"
+                
+                create_intermediate_tables(conn, lake_name)
+                yield f"data: {json.dumps({'line': 'Intermediate tables created'})}\n\n"
+                
+                create_mart_tables(conn, lake_name)
+                yield f"data: {json.dumps({'line': 'Mart tables created'})}\n\n"
+                
+                create_reference_tables(conn, lake_name)
+                yield f"data: {json.dumps({'line': 'Reference tables created'})}\n\n"
+                
+                result = conn.execute("SHOW ALL TABLES").fetchall()
+                yield f"data: {json.dumps({'line': f'Total tables: {len(result)}'})}\n\n"
+                
+                status[stage]["state"] = "completed"
+                status[stage]["last_run"] = datetime.now().isoformat()
+                _refresh_table_cache()
+                yield f"data: {json.dumps({'done': True, 'returncode': 0})}\n\n"
+            except Exception as e:
+                status[stage]["state"] = "failed"
+                yield f"data: {json.dumps({'line': f'Error: {e}'})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'returncode': 1, 'error': str(e)})}\n\n"
         elif stage == "ingest":
-            cmd = [sys.executable, "-c",
-                   f"from duck_lakehouse.ducklake.ingest import ingest_files; "
-                   f"ingest_files(archive_dir='{ARCHIVE_DIR}', "
-                   f"catalog_path='{CATALOG_PATH}', data_path='{DATA_PATH}')"]
+            # Use shared connection instead of subprocess to avoid lock conflict
+            status[stage]["state"] = "running"
+            status[stage]["output"] = []
+            try:
+                yield f"data: {json.dumps({'line': 'Using shared DuckLake connection...'})}\n\n"
+                conn = get_ducklake_conn()
+                
+                from duck_lakehouse.ducklake.ingest import ingest_files
+                total = ingest_files(
+                    archive_dir=str(ARCHIVE_DIR),
+                    conn=conn
+                )
+                yield f"data: {json.dumps({'line': f'Ingested {total} records'})}\n\n"
+                status[stage]["state"] = "completed"
+                status[stage]["last_run"] = datetime.now().isoformat()
+                _refresh_table_cache()
+                yield f"data: {json.dumps({'done': True, 'returncode': 0})}\n\n"
+            except Exception as e:
+                status[stage]["state"] = "failed"
+                yield f"data: {json.dumps({'line': f'Error: {e}'})}\n\n"
+                yield f"data: {json.dumps({'done': True, 'returncode': 1, 'error': str(e)})}\n\n"
         elif stage == "dbt":
             cmd = ["dbt", "run", "--profiles-dir", str(DBT_DIR),
                    "--project-dir", str(DBT_DIR)]
+            yield from run_command(cmd, cwd=str(BASE_DIR), stage=stage)()
         else:
             yield f"data: {json.dumps({'error': 'Unknown stage'})}\n\n"
-            return
-        
-        yield from run_command(cmd, cwd=str(BASE_DIR), stage=stage)()
     
     return Response(generate(), mimetype="text/event-stream")
 
