@@ -49,33 +49,43 @@ def _refresh_table_cache():
     global cached_tables
     try:
         conn = get_ducklake_conn()
-        try:
-            names = _discover_tables(conn)
-            tables = []
-            for fq_name in names:
-                try:
-                    count = conn.execute(
-                        f"SELECT COUNT(*) FROM vaccination_lake.{fq_name}"
-                    ).fetchone()[0]
-                except Exception:
-                    count = None
-                tables.append({"name": fq_name, "rows": count})
-            cached_tables = [t for t in tables if t.get("rows") is None or t["rows"] > 0]
-        finally:
-            conn.close()
+        names = _discover_tables(conn)
+        tables = []
+        for fq_name in names:
+            try:
+                count = conn.execute(
+                    f"SELECT COUNT(*) FROM vaccination_lake.{fq_name}"
+                ).fetchone()[0]
+            except Exception:
+                count = None
+            tables.append({"name": fq_name, "rows": count})
+        cached_tables = [t for t in tables if t.get("rows") is None or t["rows"] > 0]
     except Exception:
         pass
 
+# DuckLake connection - use a shared connection per worker process
+_ducklake_conn = None
+_ducklake_conn_lock = threading.Lock()
+
 def get_ducklake_conn():
-    conn = duckdb.connect()
-    conn.execute("INSTALL ducklake")
-    conn.execute("LOAD ducklake")
-    conn.execute(
-        f"ATTACH 'ducklake:{CATALOG_PATH}' "
-        f"AS vaccination_lake (DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
-    )
-    conn.execute("USE vaccination_lake")
-    return conn
+    """Get a DuckLake connection, reusing the existing one if available.
+    
+    Since DuckLake uses file-based locking for its metadata, we can only
+    have one connection per worker process. This returns a shared connection.
+    """
+    global _ducklake_conn
+    with _ducklake_conn_lock:
+        if _ducklake_conn is None:
+            conn = duckdb.connect()
+            conn.execute("INSTALL ducklake")
+            conn.execute("LOAD ducklake")
+            conn.execute(
+                f"ATTACH 'ducklake:{CATALOG_PATH}' "
+                f"AS vaccination_lake (DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
+            )
+            conn.execute("USE vaccination_lake")
+            _ducklake_conn = conn
+        return _ducklake_conn
 
 
 def run_command(cmd, cwd=None, stage=None):
@@ -221,7 +231,6 @@ def preview_data(stage):
                         row_dict[col] = str(row[i])[:50] if row[i] is not None else None
                     rows.append(row_dict)
                 
-                conn.close()
                 return jsonify({"headers": columns[:8], "rows": rows})
             except Exception as e:
                 return jsonify({"error": str(e)})
@@ -246,7 +255,6 @@ def preview_data(stage):
                         row_dict[col] = str(row[i])[:50] if row[i] is not None else None
                     rows.append(row_dict)
                 
-                conn.close()
                 return jsonify({"headers": columns[:8], "rows": rows})
             except Exception as e:
                 return jsonify({"error": str(e)})
@@ -267,7 +275,6 @@ def preview_data(stage):
                             marts_count = conn.execute(f"SELECT COUNT(*) FROM vaccination_lake.{tname}").fetchone()[0]
                         except Exception:
                             pass
-                conn.close()
                 return jsonify({"staging": staging_count, "marts": marts_count})
             except:
                 return jsonify({"staging": 0, "marts": 0})
@@ -353,8 +360,7 @@ EXCLUDE_PREFIXES = ("ducklake_", "__ducklake_metadata")
 
 def _discover_tables(conn=None):
     """Query DuckLake metadata to discover all user tables and views."""
-    own_conn = conn is None
-    if own_conn:
+    if conn is None:
         try:
             conn = get_ducklake_conn()
         except Exception:
@@ -381,12 +387,6 @@ def _discover_tables(conn=None):
         return sorted(result)
     except Exception:
         return []
-    finally:
-        if own_conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 @app.route("/api/tables")
@@ -443,11 +443,6 @@ def query_table(table_name):
         })
     except Exception as e:
         return jsonify({"error": str(e)})
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 @app.route("/api/run/<stage>")
 def run_stage(stage):
@@ -563,18 +558,11 @@ def execute_sql():
     if not sql:
         return jsonify({"error": "No query provided"}), 400
     try:
-        conn = duckdb.connect()
-        conn.execute("INSTALL ducklake")
-        conn.execute("LOAD ducklake")
-        conn.execute(
-            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
-            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
-        )
-        conn.execute("USE vaccination_lake")
+        # Use shared connection instead of creating new one
+        conn = get_ducklake_conn()
         result = conn.execute(sql)
-        columns = [desc[0] for desc in result.description]
+        columns = [desc[0] for desc in result.description] if result.description else []
         rows = result.fetchall()
-        conn.close()
         return jsonify({
             "columns": columns,
             "rows": [list(r) for r in rows],
@@ -588,14 +576,8 @@ def execute_sql():
 def list_sql_tables():
     """List all DuckLake tables."""
     try:
-        conn = duckdb.connect()
-        conn.execute("INSTALL ducklake")
-        conn.execute("LOAD ducklake")
-        conn.execute(
-            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
-            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
-        )
-        conn.execute("USE vaccination_lake")
+        # Use shared connection
+        conn = get_ducklake_conn()
         result = conn.execute(
             "SELECT table_schema, table_name, table_type "
             "FROM information_schema.tables "
@@ -604,7 +586,6 @@ def list_sql_tables():
         )
         columns = [desc[0] for desc in result.description]
         rows = result.fetchall()
-        conn.close()
         return jsonify({
             "columns": columns,
             "rows": [list(r) for r in rows],
@@ -617,21 +598,14 @@ def list_sql_tables():
 def list_sql_schemas():
     """List DuckLake schemas."""
     try:
-        conn = duckdb.connect()
-        conn.execute("INSTALL ducklake")
-        conn.execute("LOAD ducklake")
-        conn.execute(
-            f"ATTACH 'ducklake:{CATALOG_PATH}' AS vaccination_lake "
-            f"(DATA_PATH '{DATA_PATH}', OVERRIDE_DATA_PATH true)"
-        )
-        conn.execute("USE vaccination_lake")
+        # Use shared connection
+        conn = get_ducklake_conn()
         result = conn.execute(
             "SELECT schema_name FROM information_schema.schemata "
             "WHERE schema_name NOT IN ('information_schema', '__ducklake_metadata') "
             "ORDER BY schema_name"
         )
         schemas = [r[0] for r in result.fetchall()]
-        conn.close()
         return jsonify({"schemas": schemas})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

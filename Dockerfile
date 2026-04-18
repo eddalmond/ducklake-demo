@@ -11,11 +11,17 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
+COPY . .
+
+# Install the duck_lakehouse package so imports work
+RUN pip install --no-cache-dir -e .
+
 # Pre-warm duckdb extensions
 RUN python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL ducklake'); c.execute('LOAD ducklake'); c.close()"
 
-# Copy application code
-COPY . .
+# Install dbt packages
+RUN cd duck_lakehouse/dbt/dbt_ducklake && dbt deps || echo "dbt deps may fail if deps already cached"
 
 # Create data directories
 RUN mkdir -p /app/data/catalog /app/data/parquet \
