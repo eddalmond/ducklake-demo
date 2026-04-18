@@ -5,6 +5,7 @@ DuckLake Dashboard - Flask backend for pipeline visualization and control
 
 import json
 import os
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -25,8 +26,12 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", str(BASE_DIR / "data")))
 
 ARCHIVE_DIR = MESH_DIR / "archive"
 INBOX_DIR = MESH_DIR / "inbox"
+DUCKLAKE_DIR = DATA_DIR
 CATALOG_PATH = Path(os.environ.get("CATALOG_PATH", str(DATA_DIR / "catalog" / "vaccination_lake.ducklake")))
 DATA_PATH = Path(os.environ.get("DUCKLAKE_DATA_PATH", str(DATA_DIR / "parquet")))
+
+# Initialization state (set by start.py background thread)
+ducklake_ready = False
 
 status = {
     "generate": {"state": "idle", "output": [], "last_run": None},
@@ -110,6 +115,11 @@ def run_command(cmd, cwd=None, stage=None):
     
     return stream
 
+@app.route("/health")
+def health():
+    """Lightweight health check endpoint for Railway."""
+    return jsonify({"status": "ok", "service": "ducklake-demo", "ducklake_ready": ducklake_ready})
+
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
@@ -135,9 +145,9 @@ def get_files(stage):
         elif stage == "logs":
             path = MESH_DIR / "logs"
         elif stage == "catalog":
-            path = DUCKLAKE_DIR / "catalog"
+            path = DATA_DIR / "catalog"
         elif stage == "data":
-            path = DUCKLAKE_DIR / "data"
+            path = DATA_DIR / "parquet"
         else:
             return jsonify({"error": "Unknown stage"}), 400
         
