@@ -89,7 +89,7 @@ def main():
         options = {
             "bind": f"0.0.0.0:{PORT}",
             "workers": 1,           # Single worker for DuckDB consistency
-            "threads": 4,
+            "threads": 1,           # Single thread — DuckDB connections aren't thread-safe
             "timeout": 120,
             "accesslog": "-",
             "errorlog": "-",
